@@ -1,0 +1,34 @@
+# Python & Environment
+venv/
+.venv/
+env/
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node & Frontend Build
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.vite/
+frontend/.vite/
+
+# Local Databases & Logs
+*.sqlite3
+*.db
+backend/*.db
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# CRITICAL: Whitelist ML Artifacts (ensures Git never ignores models)
+!backend/artifacts/
+!backend/artifacts/*.joblib
