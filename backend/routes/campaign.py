@@ -1,61 +1,91 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
 
-from models.campaign import CampaignGenerationRequest
-from services.ai_service import generate_campaign_variants
-
-
-router = APIRouter(
-    prefix="/campaign",
-    tags=["AI Campaign Generation"]
+from database.database import get_db
+from database import models
+from services.ai_service import (
+    run_autonomous_retention_pipeline,
+    run_ablation_comparison,
 )
+
+router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
+
+
+class AgentCampaignRequest(BaseModel):
+    customer_segment: str
+    churn_probability: float
+    shap_features: Optional[List[Dict[str, Any]]] = []
+
+
+class AblationRequest(BaseModel):
+    customer_segment: str
+    churn_probability: float
 
 
 @router.post("/generate")
-def generate_campaign(
-    request: CampaignGenerationRequest
+def generate_campaign_with_agent(
+    payload: AgentCampaignRequest,
+    db: Session = Depends(get_db),
 ):
     """
-    Generate 3 AI-powered campaign variants
-    using the marketing strategy and customer intelligence.
+    Executes the 4-stage autonomous marketing agent pipeline:
+    1. Diagnostician (SHAP telemetry analysis)
+    2. Retriever (Vector policy grounding)
+    3. Synthesis (Variant generation)
+    4. Guardrail Judge (Automated compliance scoring)
     """
-
     try:
-
-        result = generate_campaign_variants(
-            product=request.product,
-            persona=request.persona,
-            marketing_goal=request.marketing_goal,
-            platform=request.platform,
-            budget=request.budget,
-            campaign_type=request.campaign_type,
-            content_format=request.content_format,
-            marketing_angle=request.marketing_angle,
-            tone=request.tone,
-            call_to_action=request.call_to_action,
-            recommended_offer=request.recommended_offer,
-
-            # Customer Intelligence
-            characteristics=request.characteristics,
-            marketing_needs=request.marketing_needs,
-            preferred_approach=request.preferred_approach,
+        pipeline_output = run_autonomous_retention_pipeline(
+            customer_segment=payload.customer_segment,
+            churn_probability=payload.churn_probability,
+            shap_features=payload.shap_features or [],
         )
+
+        # Persist campaign to database for history tracking
+        campaign_data = pipeline_output.get("final_campaign", {})
+        db_campaign = models.Campaign(
+            campaign_name=campaign_data.get("campaign_name", "AI Retention Campaign"),
+            target_segment=payload.customer_segment,
+            variants=campaign_data.get("variants", []),
+            compliance_score=pipeline_output.get("compliance_audit", {}).get(
+                "compliance_score", 95
+            ),
+        )
+        db.add(db_campaign)
+        db.commit()
+        db.refresh(db_campaign)
 
         return {
-            "status": "success",
-            "message": "Campaign variants generated.",
-            "campaign": result
+            "success": True,
+            "campaign_id": db_campaign.id,
+            "pipeline_telemetry": pipeline_output["stages"],
+            "campaign": campaign_data,
+            "compliance_audit": pipeline_output["compliance_audit"],
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent pipeline failure: {str(e)}")
 
-    except ValueError as error:
 
-        raise HTTPException(
-            status_code=502,
-            detail=str(error)
+@router.post("/ablation")
+def compare_rag_ablation(payload: AblationRequest):
+    """
+    Viva / Research ablation endpoint:
+    Compares raw ungrounded LLM output vs. RAG-grounded agent output.
+    """
+    try:
+        comparison = run_ablation_comparison(
+            customer_segment=payload.customer_segment,
+            churn_probability=payload.churn_probability,
         )
+        return {"success": True, "ablation_results": comparison}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ablation comparison failure: {str(e)}")
 
-    except Exception as error:
 
-        raise HTTPException(
-            status_code=500,
-            detail=f"AI campaign generation failed: {str(error)}"
-        )
+@router.get("/history")
+def get_campaign_history(db: Session = Depends(get_db)):
+    """Fetches previously synthesized and audited campaigns."""
+    campaigns = db.query(models.Campaign).order_by(models.Campaign.id.desc()).limit(20).all()
+    return campaigns
